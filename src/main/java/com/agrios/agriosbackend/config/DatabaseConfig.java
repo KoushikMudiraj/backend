@@ -35,45 +35,79 @@ public class DatabaseConfig {
             databaseUrl = rawUrl;
         }
 
-        // Automatic conversion of Render / Heroku / Supabase style URLs
-        if (databaseUrl.startsWith("postgres://") || databaseUrl.startsWith("postgresql://")) {
+        databaseUrl = databaseUrl.trim();
+        // Remove surrounding quotes if any
+        if (databaseUrl.startsWith("\"") && databaseUrl.endsWith("\"") && databaseUrl.length() > 1) {
+            databaseUrl = databaseUrl.substring(1, databaseUrl.length() - 1).trim();
+        }
+
+        // Clean url for scheme parsing
+        String cleanUrl = databaseUrl;
+        if (cleanUrl.startsWith("jdbc:")) {
+            cleanUrl = cleanUrl.substring(5);
+        }
+
+        // 1. PostgreSQL (Aiven, Render, Supabase, Neon, etc.)
+        if (cleanUrl.startsWith("postgres://") || cleanUrl.startsWith("postgresql://")) {
             try {
-                URI uri = new URI(databaseUrl);
-                String userInfo = uri.getUserInfo();
+                // Ensure URI parser has standard scheme
+                String toParse = cleanUrl.startsWith("postgres://") ? cleanUrl : cleanUrl.replaceFirst("^postgresql://", "postgres://");
+                URI uri = new URI(toParse);
+
                 String username = defaultUsername;
                 String password = defaultPassword;
+                String userInfo = uri.getUserInfo();
                 if (userInfo != null && userInfo.contains(":")) {
                     String[] parts = userInfo.split(":", 2);
                     username = parts[0];
                     password = parts[1];
                 }
+
                 int port = uri.getPort() == -1 ? 5432 : uri.getPort();
                 String path = uri.getPath();
+                String query = uri.getQuery();
+
                 String jdbcUrl = "jdbc:postgresql://" + uri.getHost() + ":" + port + path;
+                if (query != null && !query.isBlank()) {
+                    jdbcUrl += "?" + query;
+                }
 
                 config.setJdbcUrl(jdbcUrl);
                 config.setUsername(username);
                 config.setPassword(password);
                 config.setDriverClassName("org.postgresql.Driver");
             } catch (Exception e) {
-                config.setJdbcUrl(databaseUrl);
+                // Fallback: Ensure scheme is jdbc:postgresql://
+                String fallback = databaseUrl.replaceFirst("^jdbc:postgres://", "jdbc:postgresql://");
+                config.setJdbcUrl(fallback);
                 config.setUsername(defaultUsername);
                 config.setPassword(defaultPassword);
+                config.setDriverClassName("org.postgresql.Driver");
             }
-        } else if (databaseUrl.startsWith("mysql://")) {
+        } 
+        // 2. MySQL (Aiven, Railway, Clever Cloud, PlanetScale)
+        else if (cleanUrl.startsWith("mysql://")) {
             try {
-                URI uri = new URI(databaseUrl);
-                String userInfo = uri.getUserInfo();
+                URI uri = new URI(cleanUrl);
                 String username = defaultUsername;
                 String password = defaultPassword;
+                String userInfo = uri.getUserInfo();
                 if (userInfo != null && userInfo.contains(":")) {
                     String[] parts = userInfo.split(":", 2);
                     username = parts[0];
                     password = parts[1];
                 }
+
                 int port = uri.getPort() == -1 ? 3306 : uri.getPort();
                 String path = uri.getPath();
-                String jdbcUrl = "jdbc:mysql://" + uri.getHost() + ":" + port + path + "?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC";
+                String query = uri.getQuery();
+
+                String jdbcUrl = "jdbc:mysql://" + uri.getHost() + ":" + port + path;
+                if (query != null && !query.isBlank()) {
+                    jdbcUrl += "?" + query;
+                } else {
+                    jdbcUrl += "?createDatabaseIfNotExist=true&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC";
+                }
 
                 config.setJdbcUrl(jdbcUrl);
                 config.setUsername(username);
@@ -83,20 +117,26 @@ public class DatabaseConfig {
                 config.setJdbcUrl(databaseUrl);
                 config.setUsername(defaultUsername);
                 config.setPassword(defaultPassword);
+                config.setDriverClassName("com.mysql.cj.jdbc.Driver");
             }
-        } else {
-            // Standard JDBC URL
-            config.setJdbcUrl(databaseUrl);
+        } 
+        // 3. Standard JDBC URLs
+        else {
+            String finalUrl = databaseUrl;
+            if (finalUrl.startsWith("jdbc:postgres://")) {
+                finalUrl = finalUrl.replaceFirst("^jdbc:postgres://", "jdbc:postgresql://");
+            }
+            config.setJdbcUrl(finalUrl);
             config.setUsername(defaultUsername);
             config.setPassword(defaultPassword);
-            if (databaseUrl.startsWith("jdbc:mysql:")) {
+            if (finalUrl.startsWith("jdbc:mysql:")) {
                 config.setDriverClassName("com.mysql.cj.jdbc.Driver");
-            } else if (databaseUrl.startsWith("jdbc:postgresql:")) {
+            } else if (finalUrl.startsWith("jdbc:postgresql:")) {
                 config.setDriverClassName("org.postgresql.Driver");
             }
         }
 
-        // Connection pool optimization for Cloud Free Tier (e.g. Render)
+        // Connection pool optimization for Cloud Free Tier (e.g. Render 512MB RAM)
         config.setMaximumPoolSize(5);
         config.setMinimumIdle(1);
         config.setIdleTimeout(30000);
